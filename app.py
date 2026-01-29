@@ -9,19 +9,13 @@ from datetime import timedelta, datetime
 import pytz
 from streamlit_autorefresh import st_autorefresh # 自動更新用ライブラリ
 
-# ==========================================
-#  設定：パスワード
-# ==========================================
-DEMO_PASSWORD = "demo" 
-
 # --- ページ設定 ---
 st.set_page_config(page_title="ドル円AI短期予測 (5分足自動更新版)", layout="wide")
 
 # --- 自動更新設定 (5分 = 300,000ミリ秒) ---
-# keyを設定することで、更新時にリセットされるのを防ぎます
 st_autorefresh(interval=300000, key="datarefresh")
 
-# --- UI非表示 & 黒背景デザイン (CSS) ---
+# --- CSS (余白調整のみ・背景色指定なし) ---
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
@@ -30,60 +24,12 @@ st.markdown("""
     div[data-testid="stToolbar"] {visibility: hidden;}
     .stDeployButton {display:none;}
     
-    .stApp {
-        background-color: #000000;
-        color: #ffffff;
-    }
-    h1, h2, h3, h4, h5, h6, p, div, span, label, li, .stMarkdown, .stText {
-        color: #ffffff !important;
-        font-family: sans-serif;
-    }
-    .stTextInput > div > div > input {
-        color: #ffffff !important;
-        background-color: #333333;
-        font-weight: bold;
-    }
-    .stRadio > div {
-        background-color: #333333;
-        padding: 10px;
-        border-radius: 10px;
-        color: #ffffff;
-    }
-    .stSlider > div > div > div > div {
-        color: #00cc96 !important;
-    }
     .block-container {
         padding-top: 2rem;
         padding-bottom: 5rem;
-        padding-left: 0.5rem;
-        padding-right: 0.5rem;
-    }
-    .js-plotly-plot .plotly .main-svg {
-        background-color: #000000 !important;
     }
     </style>
     """, unsafe_allow_html=True)
-
-# --- パスワード認証 (セッション保持対応) ---
-def check_password():
-    if "password_correct" not in st.session_state:
-        st.session_state.password_correct = False
-    
-    if st.session_state.password_correct:
-        return True
-    
-    st.markdown("### USD/JPY 予測ツール")
-    password = st.text_input("パスワード", type="password")
-    
-    if password == DEMO_PASSWORD:
-        st.session_state.password_correct = True
-        st.rerun() # 認証成功時にリロードして反映
-    elif password:
-        st.error("パスワードが違います")
-    return False
-
-if not check_password():
-    st.stop()
 
 # --- 数値変換 ---
 def to_float(x):
@@ -218,7 +164,6 @@ def perform_backtest_persistent(df_fixed, forecast_df, min_width_setting, trend_
                 if h_price >= active_trade['sl']: hit_sl = True
             
             # ★カンニング防止: 同一足でTPとSL両方に触れた場合、常に「負け(SL)」と判定する
-            # (実際の相場でどちらに先に触れたかは5分足データだけでは不明なため、保守的に計算する)
             if hit_sl and hit_tp:
                 outcome = "LOSS"
                 pnl = -sl_pips
@@ -297,7 +242,7 @@ def perform_backtest_persistent(df_fixed, forecast_df, min_width_setting, trend_
     return pd.DataFrame(results)
 
 # --- メイン処理 ---
-st.markdown("### **ドル円AI短期予測 (5分足専用・完全固定版)**")
+st.markdown("### **ドル円AI短期予測 (5分足専用・自動更新版)**")
 
 # === 固定設定 ===
 timeframe = "5分足 (5m)"
@@ -393,7 +338,7 @@ try:
 
     st.write(f"**現在値 (5分足): {current_price:,.2f} 円**")
     trend_text = "長期上昇トレンド中" if trend_dir == 1 else ("長期下落トレンド中" if trend_dir == -1 else "レンジ相場")
-    st.write(f"<span style='font-size:0.9rem; color:#888'>{trend_text} (現在日時: {display_time})</span>", unsafe_allow_html=True)
+    st.write(f"<span style='font-size:0.9rem; color:#666'>{trend_text} (現在日時: {display_time})</span>", unsafe_allow_html=True)
 
     # 過去分析
     st.markdown("#### **📉 直近のAI判断 (過去の答え合わせ)**")
@@ -442,8 +387,7 @@ try:
     fig_bar.update_layout(
         height=300, 
         margin=dict(l=0, r=0, t=30, b=20), barmode='group',
-        yaxis=dict(range=[0, 105], showgrid=True, title="確率 (%)"),
-        xaxis=dict(showgrid=False),
+        yaxis=dict(range=[0, 105], title="確率 (%)"),
     )
     st.plotly_chart(fig_bar, use_container_width=True)
 
@@ -458,18 +402,18 @@ try:
     fig_chart.add_trace(go.Scatter(x=df_fixed['ds'], y=df_fixed['BB_Upper'], mode='lines', line=dict(width=0), hoverinfo='skip', showlegend=False))
     fig_chart.add_trace(go.Scatter(
         x=df_fixed['ds'], y=df_fixed['BB_Lower'], mode='lines', line=dict(width=0),
-        fill='tonexty', fillcolor='rgba(180, 80, 255, 0.25)', name='BB(±2σ)', hoverinfo='skip'
+        fill='tonexty', fillcolor='rgba(138, 43, 226, 0.2)', name='BB(±2σ)', hoverinfo='skip'
     ))
     fig_chart.add_trace(go.Candlestick(x=df_fixed['ds'], open=df_fixed['Open'], high=df_fixed['High'], low=df_fixed['Low'], close=df_fixed['Close'], name='実測(確定足)'))
     fig_chart.add_trace(go.Scatter(x=df_fixed['ds'], y=df_fixed['SMA20'], mode='lines', name='SMA20', line=dict(color='cyan', width=1)))
-    fig_chart.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], mode='lines', name='AI軌道', line=dict(color='yellow', width=2)))
+    fig_chart.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], mode='lines', name='AI軌道', line=dict(color='orange', width=2)))
     
     x_max = forecast['ds'].max()
     x_min = df_fixed['ds'].min()
     fig_chart.update_layout(
         height=500, 
-        xaxis=dict(range=[x_min, x_max], showgrid=True), 
-        yaxis=dict(fixedrange=False, showgrid=True)
+        xaxis=dict(range=[x_min, x_max]), 
+        yaxis=dict(fixedrange=False)
     )
     st.plotly_chart(fig_chart, use_container_width=True)
 
@@ -478,7 +422,7 @@ try:
     st.markdown("### 🔙 **過去72時間のバックテスト (保有継続・時間フィルター版)**")
     
     st.markdown(f"""
-    <div style="font-size:0.8rem; color:#888; margin-bottom:10px;">
+    <div style="font-size:0.8rem; color:#666; margin-bottom:10px;">
     ルール: AIの方向確率が <b>{entry_threshold}%</b> を超えた時点でエントリー。<br>
     利確 <b>+{tp_pips}pips</b> / 損切 <b>-{sl_pips}pips</b> に到達するまで、時間をまたいでポジションを保有し続けます。<br>
     <span style="color:#ff4b4b;">※日本時間 02:00〜08:59 の間はエントリーしません。(決済は行われます)</span>
@@ -529,20 +473,19 @@ try:
                 y=bt_results['Cumulative_PL'], 
                 mode='lines+markers', 
                 name='累積損益(pips)', 
-                line=dict(color='yellow', width=3)
+                line=dict(color='orange', width=3)
             ),
             secondary_y=True
         )
         
         fig_pnl.update_layout(
             height=400, margin=dict(l=0, r=0, t=30, b=20), 
-            xaxis=dict(title="決済日時", type='category', showgrid=True),
             showlegend=True,
             legend=dict(orientation="h", y=1.1)
         )
         
-        fig_pnl.update_yaxes(title_text="AI確度 (%)", range=[50, 105], showgrid=True, secondary_y=False)
-        fig_pnl.update_yaxes(title_text="累積 pips", showgrid=False, secondary_y=True)
+        fig_pnl.update_yaxes(title_text="AI確度 (%)", range=[50, 105], secondary_y=False)
+        fig_pnl.update_yaxes(title_text="累積 pips", secondary_y=True)
 
         st.plotly_chart(fig_pnl, use_container_width=True)
         st.dataframe(bt_results, hide_index=True, use_container_width=True)
