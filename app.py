@@ -10,7 +10,7 @@ import pytz
 from streamlit_autorefresh import st_autorefresh # 自動更新用ライブラリ
 
 # --- ページ設定 ---
-st.set_page_config(page_title="ドル円AI短期予測 (回数固定版)", layout="wide")
+st.set_page_config(page_title="ドル円AI短期予測 (5分足自動更新版)", layout="wide")
 
 # --- 自動更新設定 (5分 = 300,000ミリ秒) ---
 st_autorefresh(interval=300000, key="datarefresh")
@@ -55,13 +55,13 @@ def get_realtime_data():
         pass
     return None, None, pd.DataFrame()
 
-# --- 強力データ取得関数 (期間延長) ---
+# --- 強力データ取得関数 (期間延長: 50回分確保のため20日に) ---
 def get_forex_data_robust():
     tickers_to_try = ["USDJPY=X", "JPY=X"]
     for ticker in tickers_to_try:
         try:
-            # ★変更: 30回分のトレードを見つけるため、期間を5日(5d)→15日(15d)に延長
-            temp_df = yf.download(ticker, period="15d", interval="5m", progress=False)
+            # ★変更: 50回分のトレードを見つけるため、期間を20日(20d)に延長
+            temp_df = yf.download(ticker, period="20d", interval="5m", progress=False)
             if not temp_df.empty and len(temp_df) > 50:
                 return temp_df
         except:
@@ -129,7 +129,7 @@ def perform_backtest_persistent(df_fixed, forecast_df, min_width_setting, trend_
     # データ結合
     df_merged = pd.merge(df_fixed, forecast_df[['ds', 'yhat', 'yhat_lower', 'yhat_upper']], on='ds', how='inner')
     
-    # ★変更: 時間によるカットオフを廃止し、全データを使用
+    # 時間によるカットオフを廃止し、全データを使用
     backtest_data = df_merged.copy().reset_index(drop=True)
     
     results = []
@@ -245,8 +245,8 @@ st.markdown("### **ドル円AI短期予測 (5分足専用・回数固定版)**")
 # === 固定設定 ===
 timeframe = "5分足 (5m)"
 api_interval = "5m"
-# ★変更: Prophetの学習データも少し長めに確保
-api_period = "15d" 
+# ★変更: データ期間を20日に延長
+api_period = "20d" 
 min_width_setting = 0.03
 trend_window = 100 
 future_configs = [(5, "5分後"), (10, "10分後"), (15, "15分後")]
@@ -275,7 +275,7 @@ with col2:
 st.warning("※注意：設定を変更すると基準の時間が最新に変わります")
 
 try:
-    with st.spinner('データ取得中... (期間を15日に拡大中)'):
+    with st.spinner('データ取得中... (期間を20日に拡大中)'):
         df = get_forex_data_robust()
 
     if df.empty:
@@ -418,8 +418,14 @@ try:
     st.plotly_chart(fig_chart, use_container_width=True)
 
     # バックテスト結果
-    # ★変更: 直近の回数（30回 or 15回）でスライスして表示
-    target_trades = 15 if entry_threshold == 85 else 30
+    
+    # ★変更: 条件に応じて表示回数を切り替え
+    if entry_threshold == 70:
+        target_trades = 50
+    elif entry_threshold == 85:
+        target_trades = 15
+    else:
+        target_trades = 30
     
     st.markdown("---")
     st.markdown(f"### 🔙 **直近取引振り返り (直近{target_trades}回固定)**")
