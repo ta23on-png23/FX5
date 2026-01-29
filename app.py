@@ -10,12 +10,12 @@ import pytz
 from streamlit_autorefresh import st_autorefresh # 自動更新用ライブラリ
 
 # --- ページ設定 ---
-st.set_page_config(page_title="ドル円AI短期予測 (5分足自動更新版)", layout="wide")
+st.set_page_config(page_title="ドル円AI短期予測 (回数固定版)", layout="wide")
 
 # --- 自動更新設定 (5分 = 300,000ミリ秒) ---
 st_autorefresh(interval=300000, key="datarefresh")
 
-# --- CSS (余白調整のみ・背景色指定なし) ---
+# --- CSS (余白調整のみ) ---
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
@@ -55,13 +55,14 @@ def get_realtime_data():
         pass
     return None, None, pd.DataFrame()
 
-# --- 強力データ取得関数 ---
+# --- 強力データ取得関数 (期間延長) ---
 def get_forex_data_robust():
     tickers_to_try = ["USDJPY=X", "JPY=X"]
     for ticker in tickers_to_try:
         try:
-            temp_df = yf.download(ticker, period="5d", interval="5m", progress=False)
-            if not temp_df.empty and len(temp_df) > 20:
+            # ★変更: 30回分のトレードを見つけるため、期間を5日(5d)→15日(15d)に延長
+            temp_df = yf.download(ticker, period="15d", interval="5m", progress=False)
+            if not temp_df.empty and len(temp_df) > 50:
                 return temp_df
         except:
             pass
@@ -123,13 +124,13 @@ def calculate_reversion_probability(current_price, predicted_price, lower_bound,
     
     return final_prob, note
 
-# --- バックテスト機能 (カンニング防止・厳格判定) ---
+# --- バックテスト機能 (回数制限対応版) ---
 def perform_backtest_persistent(df_fixed, forecast_df, min_width_setting, trend_window, threshold, tp_pips, sl_pips):
     # データ結合
     df_merged = pd.merge(df_fixed, forecast_df[['ds', 'yhat', 'yhat_lower', 'yhat_upper']], on='ds', how='inner')
     
-    cutoff_date = df_merged['ds'].max() - timedelta(hours=72)
-    backtest_data = df_merged[df_merged['ds'] >= cutoff_date].copy().reset_index(drop=True)
+    # ★変更: 時間によるカットオフを廃止し、全データを使用
+    backtest_data = df_merged.copy().reset_index(drop=True)
     
     results = []
     active_trade = None 
@@ -155,7 +156,6 @@ def perform_backtest_persistent(df_fixed, forecast_df, min_width_setting, trend_
             hit_tp = False
             hit_sl = False
             
-            # 高値・安値による判定
             if active_trade['type'] == 'BUY':
                 if h_price >= active_trade['tp']: hit_tp = True
                 if l_price <= active_trade['sl']: hit_sl = True
@@ -163,7 +163,7 @@ def perform_backtest_persistent(df_fixed, forecast_df, min_width_setting, trend_
                 if l_price <= active_trade['tp']: hit_tp = True
                 if h_price >= active_trade['sl']: hit_sl = True
             
-            # ★カンニング防止: 同一足でTPとSL両方に触れた場合、常に「負け(SL)」と判定する
+            # カンニング防止ロジック
             if hit_sl and hit_tp:
                 outcome = "LOSS"
                 pnl = -sl_pips
@@ -191,14 +191,12 @@ def perform_backtest_persistent(df_fixed, forecast_df, min_width_setting, trend_
         
         # --- 2. 新規エントリー判定 ---
         if active_trade is None:
-            # 時間フィルター
             if 2 <= current_hour < 9:
                 continue
 
             pred = to_float(row['yhat'])
             current_trend_sma = to_float(row['Trend_SMA']) if 'Trend_SMA' in row else c_price
             
-            # トレンド方向判定
             trend_dir = 0
             if c_price > current_trend_sma: trend_dir = 1
             elif c_price < current_trend_sma: trend_dir = -1
@@ -242,12 +240,13 @@ def perform_backtest_persistent(df_fixed, forecast_df, min_width_setting, trend_
     return pd.DataFrame(results)
 
 # --- メイン処理 ---
-st.markdown("### **ドル円AI短期予測 (5分足専用・自動更新版)**")
+st.markdown("### **ドル円AI短期予測 (5分足専用・回数固定版)**")
 
 # === 固定設定 ===
 timeframe = "5分足 (5m)"
 api_interval = "5m"
-api_period = "5d" 
+# ★変更: Prophetの学習データも少し長めに確保
+api_period = "15d" 
 min_width_setting = 0.03
 trend_window = 100 
 future_configs = [(5, "5分後"), (10, "10分後"), (15, "15分後")]
@@ -256,11 +255,11 @@ past_configs = [(5, "5分前"), (10, "10分前"), (15, "15分前")]
 # === ★設定パネル ===
 st.markdown("##### **🛠️ エントリー・決済設定**")
 
-# エントリー閾値 (初期値70%、85%追加)
+# エントリー閾値
 entry_threshold = st.radio(
     "エントリー判定閾値 (確率%)",
-    [70, 75, 80, 85], # 85を追加
-    index=0, # 初期値を70(index=0)に設定
+    [70, 75, 80, 85], 
+    index=0, 
     horizontal=True,
     key="threshold_radio",
     help="AIの確信度がこの数値以上の場合のみエントリーします。"
@@ -276,7 +275,7 @@ with col2:
 st.warning("※注意：設定を変更すると基準の時間が最新に変わります")
 
 try:
-    with st.spinner('5分足データ取得中... (自動更新)'):
+    with st.spinner('データ取得中... (期間を15日に拡大中)'):
         df = get_forex_data_robust()
 
     if df.empty:
@@ -306,7 +305,7 @@ try:
     df['BB_Lower'] = df['SMA20'] - (df['STD'] * 2)
     df['Trend_SMA'] = df['Close'].rolling(window=trend_window).mean()
 
-    # ★カンニング防止: 最新の足(未確定足)をAI学習とバックテストから完全に除外
+    # ★カンニング防止: 最新の足を除外
     df['y'] = df['Close'] 
     df_fixed = df.iloc[:-1].copy() 
 
@@ -388,6 +387,7 @@ try:
         height=300, 
         margin=dict(l=0, r=0, t=30, b=20), barmode='group',
         yaxis=dict(range=[0, 105], title="確率 (%)"),
+        xaxis=dict(showgrid=False),
     )
     st.plotly_chart(fig_bar, use_container_width=True)
 
@@ -402,14 +402,14 @@ try:
     fig_chart.add_trace(go.Scatter(x=df_fixed['ds'], y=df_fixed['BB_Upper'], mode='lines', line=dict(width=0), hoverinfo='skip', showlegend=False))
     fig_chart.add_trace(go.Scatter(
         x=df_fixed['ds'], y=df_fixed['BB_Lower'], mode='lines', line=dict(width=0),
-        fill='tonexty', fillcolor='rgba(138, 43, 226, 0.2)', name='BB(±2σ)', hoverinfo='skip'
+        fill='tonexty', fillcolor='rgba(180, 80, 255, 0.2)', name='BB(±2σ)', hoverinfo='skip'
     ))
     fig_chart.add_trace(go.Candlestick(x=df_fixed['ds'], open=df_fixed['Open'], high=df_fixed['High'], low=df_fixed['Low'], close=df_fixed['Close'], name='実測(確定足)'))
     fig_chart.add_trace(go.Scatter(x=df_fixed['ds'], y=df_fixed['SMA20'], mode='lines', name='SMA20', line=dict(color='cyan', width=1)))
     fig_chart.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat'], mode='lines', name='AI軌道', line=dict(color='orange', width=2)))
     
     x_max = forecast['ds'].max()
-    x_min = df_fixed['ds'].min()
+    x_min = df_fixed['ds'].iloc[-100] # 直近100本を表示
     fig_chart.update_layout(
         height=500, 
         xaxis=dict(range=[x_min, x_max]), 
@@ -418,8 +418,11 @@ try:
     st.plotly_chart(fig_chart, use_container_width=True)
 
     # バックテスト結果
+    # ★変更: 直近の回数（30回 or 15回）でスライスして表示
+    target_trades = 15 if entry_threshold == 85 else 30
+    
     st.markdown("---")
-    st.markdown("### 🔙 **過去72時間のバックテスト (保有継続・時間フィルター版)**")
+    st.markdown(f"### 🔙 **直近取引振り返り (直近{target_trades}回固定)**")
     
     st.markdown(f"""
     <div style="font-size:0.8rem; color:#666; margin-bottom:10px;">
@@ -432,6 +435,10 @@ try:
     bt_results = perform_backtest_persistent(df_fixed, forecast, min_width_setting, trend_window, entry_threshold, tp_pips, sl_pips)
     
     if not bt_results.empty:
+        # ★ここで直近N回分だけにカットする
+        if len(bt_results) > target_trades:
+            bt_results = bt_results.iloc[-target_trades:].reset_index(drop=True)
+
         total_trades = len(bt_results)
         wins = len(bt_results[bt_results['結果'] == "WIN"])
         losses = len(bt_results[bt_results['結果'] == "LOSS"])
@@ -439,11 +446,12 @@ try:
         total_pips = bt_results['P/L(pips)'].sum()
         
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("総取引回数", f"{total_trades} 回")
+        col1.metric("表示取引回数", f"{total_trades} 回")
         col2.metric("勝率", f"{win_rate:.1f} %")
         col3.metric("合計獲得pips", f"{total_pips:+.1f} pips", delta_color="normal")
         col4.metric("内訳", f"勝{wins} / 負{losses}")
         
+        # 累積損益の再計算
         bt_results['Cumulative_PL'] = bt_results['P/L(pips)'].cumsum()
         
         # 2軸グラフ
@@ -490,7 +498,7 @@ try:
         st.plotly_chart(fig_pnl, use_container_width=True)
         st.dataframe(bt_results, hide_index=True, use_container_width=True)
     else:
-        st.info(f"過去72時間以内に条件(確率{entry_threshold}%以上)を満たすエントリーポイントはありませんでした。")
+        st.info(f"過去の期間内に条件(確率{entry_threshold}%以上)を満たすエントリーポイントはありませんでした。")
 
 except Exception as e:
     st.error(f"エラーが発生しました: {e}")
