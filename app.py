@@ -4,9 +4,10 @@ from prophet import Prophet
 import pandas as pd
 from scipy.stats import norm
 import plotly.graph_objs as go
-from plotly.subplots import make_subplots # 2軸グラフ用
+from plotly.subplots import make_subplots
 from datetime import timedelta, datetime
 import pytz
+from streamlit_autorefresh import st_autorefresh # 自動更新用ライブラリ
 
 # ==========================================
 #  設定：パスワード
@@ -14,9 +15,13 @@ import pytz
 DEMO_PASSWORD = "demo" 
 
 # --- ページ設定 ---
-st.set_page_config(page_title="ドル円AI短期予測 (5分足固定版)", layout="wide")
+st.set_page_config(page_title="ドル円AI短期予測 (5分足自動更新版)", layout="wide")
 
-# --- UI非表示デザイン (CSS) ---
+# --- 自動更新設定 (5分 = 300,000ミリ秒) ---
+# keyを設定することで、更新時にリセットされるのを防ぎます
+st_autorefresh(interval=300000, key="datarefresh")
+
+# --- UI非表示 & 黒背景デザイン (CSS) ---
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
@@ -25,27 +30,54 @@ st.markdown("""
     div[data-testid="stToolbar"] {visibility: hidden;}
     .stDeployButton {display:none;}
     
+    .stApp {
+        background-color: #000000;
+        color: #ffffff;
+    }
+    h1, h2, h3, h4, h5, h6, p, div, span, label, li, .stMarkdown, .stText {
+        color: #ffffff !important;
+        font-family: sans-serif;
+    }
+    .stTextInput > div > div > input {
+        color: #ffffff !important;
+        background-color: #333333;
+        font-weight: bold;
+    }
+    .stRadio > div {
+        background-color: #333333;
+        padding: 10px;
+        border-radius: 10px;
+        color: #ffffff;
+    }
+    .stSlider > div > div > div > div {
+        color: #00cc96 !important;
+    }
     .block-container {
         padding-top: 2rem;
         padding-bottom: 5rem;
         padding-left: 0.5rem;
         padding-right: 0.5rem;
     }
+    .js-plotly-plot .plotly .main-svg {
+        background-color: #000000 !important;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-# --- パスワード認証 ---
+# --- パスワード認証 (セッション保持対応) ---
 def check_password():
     if "password_correct" not in st.session_state:
         st.session_state.password_correct = False
+    
     if st.session_state.password_correct:
         return True
     
     st.markdown("### USD/JPY 予測ツール")
     password = st.text_input("パスワード", type="password")
+    
     if password == DEMO_PASSWORD:
         st.session_state.password_correct = True
-        st.rerun()
+        st.rerun() # 認証成功時にリロードして反映
     elif password:
         st.error("パスワードが違います")
     return False
@@ -130,7 +162,7 @@ def calculate_reversion_probability(current_price, predicted_price, lower_bound,
         dist_from_center = (c - center) / (box_width / 2) if box_width > 0 else 0
         correction += dist_from_center * -5.0
 
-    # 長期トレンドフィルター
+    # 長期トレンドフィルター (厳格化)
     if p < c and trend_direction == 1:
         penalty = 25.0 
         base_prob += penalty 
@@ -145,13 +177,9 @@ def calculate_reversion_probability(current_price, predicted_price, lower_bound,
     
     return final_prob, note
 
-# --- バックテスト機能 (TP/SL可変版) ---
+# --- バックテスト機能 (カンニング防止・厳格判定) ---
 def perform_backtest_persistent(df_fixed, forecast_df, min_width_setting, trend_window, threshold, tp_pips, sl_pips):
-    """
-    過去72時間分のデータでテスト。
-    tp_pips: 利確幅(pips)
-    sl_pips: 損切幅(pips)
-    """
+    # データ結合
     df_merged = pd.merge(df_fixed, forecast_df[['ds', 'yhat', 'yhat_lower', 'yhat_upper']], on='ds', how='inner')
     
     cutoff_date = df_merged['ds'].max() - timedelta(hours=72)
@@ -160,7 +188,6 @@ def perform_backtest_persistent(df_fixed, forecast_df, min_width_setting, trend_
     results = []
     active_trade = None 
     
-    # pipsを価格差に変換 (1pip = 0.01円)
     tp_dist = tp_pips * 0.01
     sl_dist = sl_pips * 0.01
     
@@ -182,6 +209,7 @@ def perform_backtest_persistent(df_fixed, forecast_df, min_width_setting, trend_
             hit_tp = False
             hit_sl = False
             
+            # 高値・安値による判定
             if active_trade['type'] == 'BUY':
                 if h_price >= active_trade['tp']: hit_tp = True
                 if l_price <= active_trade['sl']: hit_sl = True
@@ -189,9 +217,11 @@ def perform_backtest_persistent(df_fixed, forecast_df, min_width_setting, trend_
                 if l_price <= active_trade['tp']: hit_tp = True
                 if h_price >= active_trade['sl']: hit_sl = True
             
+            # ★カンニング防止: 同一足でTPとSL両方に触れた場合、常に「負け(SL)」と判定する
+            # (実際の相場でどちらに先に触れたかは5分足データだけでは不明なため、保守的に計算する)
             if hit_sl and hit_tp:
                 outcome = "LOSS"
-                pnl = -sl_pips # 両方ヒットは損切とみなす
+                pnl = -sl_pips
             elif hit_sl:
                 outcome = "LOSS"
                 pnl = -sl_pips
@@ -216,11 +246,14 @@ def perform_backtest_persistent(df_fixed, forecast_df, min_width_setting, trend_
         
         # --- 2. 新規エントリー判定 ---
         if active_trade is None:
+            # 時間フィルター
             if 2 <= current_hour < 9:
                 continue
 
             pred = to_float(row['yhat'])
             current_trend_sma = to_float(row['Trend_SMA']) if 'Trend_SMA' in row else c_price
+            
+            # トレンド方向判定
             trend_dir = 0
             if c_price > current_trend_sma: trend_dir = 1
             elif c_price < current_trend_sma: trend_dir = -1
@@ -278,13 +311,14 @@ past_configs = [(5, "5分前"), (10, "10分前"), (15, "15分前")]
 # === ★設定パネル ===
 st.markdown("##### **🛠️ エントリー・決済設定**")
 
-# エントリー閾値
+# エントリー閾値 (初期値70%、85%追加)
 entry_threshold = st.radio(
     "エントリー判定閾値 (確率%)",
-    [70, 75, 80],
-    index=1,
+    [70, 75, 80, 85], # 85を追加
+    index=0, # 初期値を70(index=0)に設定
     horizontal=True,
-    key="threshold_radio"
+    key="threshold_radio",
+    help="AIの確信度がこの数値以上の場合のみエントリーします。"
 )
 
 # 利確と損切の選択
@@ -297,7 +331,7 @@ with col2:
 st.warning("※注意：設定を変更すると基準の時間が最新に変わります")
 
 try:
-    with st.spinner('5分足データ取得中...'):
+    with st.spinner('5分足データ取得中... (自動更新)'):
         df = get_forex_data_robust()
 
     if df.empty:
@@ -320,12 +354,14 @@ try:
     try: df['ds'] = pd.to_datetime(df['ds']).dt.tz_convert('Asia/Tokyo').dt.tz_localize(None)
     except: df['ds'] = pd.to_datetime(df['ds'])
 
+    # テクニカル計算
     df['SMA20'] = df['Close'].rolling(window=20).mean()
     df['STD'] = df['Close'].rolling(window=20).std()
     df['BB_Upper'] = df['SMA20'] + (df['STD'] * 2)
     df['BB_Lower'] = df['SMA20'] - (df['STD'] * 2)
     df['Trend_SMA'] = df['Close'].rolling(window=trend_window).mean()
 
+    # ★カンニング防止: 最新の足(未確定足)をAI学習とバックテストから完全に除外
     df['y'] = df['Close'] 
     df_fixed = df.iloc[:-1].copy() 
 
@@ -336,6 +372,7 @@ try:
     future = m.make_future_dataframe(periods=40, freq='5min')
     forecast = m.predict(future)
 
+    # 現在値
     realtime_price, realtime_time, df_recent_1m = get_realtime_data()
     last_fixed_price = to_float(df_fixed['Close'].iloc[-1])
     last_fixed_date = df_fixed['ds'].iloc[-1]
@@ -448,7 +485,6 @@ try:
     </div>
     """, unsafe_allow_html=True)
     
-    # ★ 修正: TP/SLを引数で渡す
     bt_results = perform_backtest_persistent(df_fixed, forecast, min_width_setting, trend_window, entry_threshold, tp_pips, sl_pips)
     
     if not bt_results.empty:
