@@ -4,3 +4,4 @@ prophet
 pandas
 scipy
 plotly
+streamlit-autorefresh
